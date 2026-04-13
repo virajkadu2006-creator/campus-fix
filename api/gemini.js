@@ -11,10 +11,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Standardizing on Flash model for high reliability
     const model = "gemini-2.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+    // Forward the body as-is (this now includes contents AND generationConfig)
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
