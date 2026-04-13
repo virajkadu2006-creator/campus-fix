@@ -1,5 +1,5 @@
 // ============================================================
-// CampusFix AI Service - GOOGLE GEMINI VERSION
+// CampusFix AI Service - GOOGLE GEMINI VERSION (VERCEL READY)
 // ============================================================
 
 const MODEL = "gemini-flash-latest"; 
@@ -30,7 +30,7 @@ function fallbackClassify(description, errorMsg) {
     confidence: 15,
     department: DEPT[category] || "General Administration",
     priority: (category === "Anti-Ragging & Safety" || lower.includes("urgent")) ? "High" : "Medium",
-    reasoning: "⚠️ Gemini service unavailable — keyword fallback used.",
+    reasoning: "⚠️ AI service unavailable — keyword fallback used.",
     isFallback: true
   };
 }
@@ -39,33 +39,23 @@ function extractJSON(text) {
   if (!text) return null;
   const clean = text.trim();
   try { return JSON.parse(clean); } catch (_) {}
-  // Handle markdown blocks
   const md = clean.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (md) { try { return JSON.parse(md[1].trim()); } catch (_) {} }
-  // Handle loose curly braces
   const start = clean.indexOf('{'), end = clean.lastIndexOf('}');
   if (start !== -1 && end > start) { try { return JSON.parse(clean.slice(start, end + 1)); } catch (_) {} }
   return null;
 }
 
 /**
- * Modernized for Google Gemini API via Fetch
+ * Modernized for Google Gemini API
+ * Local: Direct fetch to Google (using VITE_ key)
+ * Production: Secure Proxy call to /api/gemini
  */
 async function callGemini(prompt, options = {}) {
   const isDev = import.meta.env.DEV;
-  // Support both new GEMINI key and legacy OPENAI variable name if user just swapped values
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_OPENAI_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("Missing Gemini API Key. Please update your .env file.");
-  }
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
-
+  
   const payload = {
-    contents: [{
-      parts: [{ text: prompt }]
-    }],
+    contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: options.temperature ?? 0.7,
       maxOutputTokens: options.maxTokens ?? 1000,
@@ -74,24 +64,38 @@ async function callGemini(prompt, options = {}) {
     }
   };
 
+  let response;
+  
   if (isDev) {
-    console.log(`📡 [DEV] Calling Gemini API (${MODEL})...`);
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_OPENAI_API_KEY;
+    if (!apiKey) throw new Error("Missing Gemini API Key in .env");
+    
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
+    console.log(`📡 [DEV] Calling Gemini API directly...`);
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } else {
+    console.log(`📡 [PROD] Calling Gemini via Vercel Proxy...`);
+    response = await fetch("/api/gemini", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: MODEL,
+        ...payload
+      })
+    });
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-
   const data = await response.json();
-  
   if (!response.ok) {
     throw new Error(data.error?.message || `HTTP ${response.status}`);
   }
 
   const content = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!content) throw new Error("Empty response from Gemini");
+  if (!content) throw new Error("Empty response from AI");
   return content;
 }
 
@@ -112,7 +116,7 @@ Complaint: "${description}"`;
     const rawText = await callGemini(prompt, { temperature: 0.1 });
     const parsed = extractJSON(rawText);
     
-    if (!parsed || !parsed.category) throw new Error("Invalid Gemini response format");
+    if (!parsed || !parsed.category) throw new Error("Invalid response format");
 
     return {
       category: CATEGORIES.includes(parsed.category) ? parsed.category : "Other",
@@ -130,7 +134,7 @@ Complaint: "${description}"`;
 export const askAIBuddy = async (chatHistory, newMessage) => {
   try {
     const historyContext = chatHistory.slice(-5).map(m => `${m.role === 'user' ? 'Student' : 'Assistant'}: ${m.content}`).join("\n");
-    const systemPrompt = "You are the CampusFix AI Buddy, a helpful and empathetic university assistant. Keep responses concise and friendly.\n\n";
+    const systemPrompt = "You are the CampusFix AI Buddy, a helpful university assistant. Keep responses concise and friendly.\n\n";
     const prompt = `${systemPrompt}${historyContext}\nStudent: ${newMessage}\nAssistant:`;
     
     return await callGemini(prompt, { temperature: 0.7 });
@@ -142,7 +146,7 @@ export const askAIBuddy = async (chatHistory, newMessage) => {
 
 export const generateNotificationMessage = async (complaint) => {
   try {
-    const prompt = `Write a professional 100-word email notification to a student regarding their complaint: "${complaint.description}". The department handling this is ${complaint.department}.`;
+    const prompt = `Write a professional 100-word email notification regarding: "${complaint.description}". Department: ${complaint.department}.`;
     return await callGemini(prompt, { temperature: 0.5 });
   } catch (err) {
     return `Notification pending for ${complaint.department}.`;
@@ -151,13 +155,13 @@ export const generateNotificationMessage = async (complaint) => {
 
 export const generateAdminInsights = async (complaints) => {
   try {
-    const prompt = `Analyze these latest university complaints and return exactly 3 high-level insights as a JSON array of strings:
+    const prompt = `Analyze these latest complaints and return exactly 3 high-level insights as a JSON array of strings:
 Data: ${JSON.stringify(complaints.slice(0,5))}
 Only return the JSON array [ "Insight 1", "Insight 2", "Insight 3" ].`;
     
     const text = await callGemini(prompt, { temperature: 0.2 });
     return extractJSON(text) || [];
   } catch (err) {
-    return ["AI insights currently unavailable.", "Monitoring systems remain active.", "Check department logs for updates."];
+    return ["AI insights currently unavailable.", "Check department logs for updates."];
   }
 };
