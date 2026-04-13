@@ -54,15 +54,6 @@ function fallbackClassify(text) {
 }
 
 export const classifyComplaint = async (description, imageBase64 = null) => {
-  const apiKey = localStorage.getItem("campusFixGeminiKey") || atob("QUl6YVN5RFBEeDhJVmZiSFhqUHR1SUhUU3NhYkZYMWhpalFQV3RV");
-  
-  if (!apiKey) {
-    console.warn("No Gemini API Key found, using fallback classifier.");
-    // Simulate slight delay for effect
-    await new Promise(resolve => setTimeout(resolve, 800));
-    return fallbackClassify(description);
-  }
-
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
@@ -95,7 +86,7 @@ export const classifyComplaint = async (description, imageBase64 = null) => {
       }
     };
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch("/api/gemini", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -192,12 +183,6 @@ WHAT TO AVOID: Do NOT copy the complaint text directly. Do NOT use generic phras
 FINAL INSTRUCTION: Generate the best possible notification message that a real university system would send.`;
 
 export const generateNotificationMessage = async (complaint) => {
-  const apiKey = localStorage.getItem("campusFixGeminiKey") || atob("QUl6YVN5RFBEeDhJVmZiSFhqUHR1SUhUU3NhYkZYMWhpalFQV3RV");
-  
-  if (!apiKey) {
-    return `Dear ${complaint.department},\n\nA new complaint (${complaint.id}) has been assigned to your department. Visual evidence is ${complaint.imageBase64 ? 'attached' : 'not attached'}.\n\nPlease review and take necessary action.\n\nCampusFix Automated Systems\nCampus Complaint Management Platform`;
-  }
-
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
@@ -227,7 +212,7 @@ Submitted At: ${complaint.submittedAt}`;
       }
     };
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch("/api/gemini", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -254,12 +239,6 @@ Submitted At: ${complaint.submittedAt}`;
 const BUDDY_SYSTEM_PROMPT = `You are CampusFix AI Buddy, a smart, friendly, and helpful campus assistant. You help students solve basic problems, give guidance, suggest actions, and assist with campus-related issues. Be clear, helpful, slightly conversational, and solution-oriented. Keep answers practical and easy to understand.`;
 
 export const askAIBuddy = async (chatHistory, newMessage) => {
-  const apiKey = localStorage.getItem("campusFixGeminiKey") || atob("QUl6YVN5RFBEeDhJVmZiSFhqUHR1SUhUU3NhYkZYMWhpalFQV3RV");
-  
-  if (!apiKey) {
-    return "I am currently running in offline mode. Please add your Gemini API Key in the settings to activate my intelligence!";
-  }
-
   try {
     const contents = chatHistory.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
@@ -281,7 +260,7 @@ export const askAIBuddy = async (chatHistory, newMessage) => {
       }
     };
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch("/api/gemini", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -324,19 +303,6 @@ Example:
 ]`;
 
 export const generateAdminInsights = async (complaints) => {
-  const apiKey = localStorage.getItem("campusFixGeminiKey") || atob("QUl6YVN5RFBEeDhJVmZiSFhqUHR1SUhUU3NhYkZYMWhpalFQV3RV");
-  
-  if (!apiKey) {
-    return [
-      {
-        title: "API Key Required",
-        type: "risk",
-        description: "Please provide a Gemini API key in the settings to unlock AI-powered executive insights.",
-        recommendation: "Open Settings > Add Key"
-      }
-    ];
-  }
-
   // Pre-process complaints (strip large images, send only relevant subset)
   const slimComplaints = complaints.slice(0, 50).map(c => ({
     category: c.category,
@@ -357,7 +323,7 @@ export const generateAdminInsights = async (complaints) => {
       generationConfig: { responseMimeType: "application/json" }
     };
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch("/api/gemini", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
