@@ -6,11 +6,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // In local dev, /api/classify is proxied directly to Gemini
-      '/api/classify': {
+      // In local dev, /api/gemini is proxied directly to Gemini API
+      // This solves the CORS issues and the local 404 issues
+      '/api/gemini': {
         target: 'https://generativelanguage.googleapis.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/classify/, ''),
+        rewrite: (path) => path.replace(/^\/api\/gemini/, ''),
         secure: true,
       }
     }
