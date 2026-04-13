@@ -1,5 +1,5 @@
 // ============================================================
-// CampusFix AI Service - ULTRA ROBUST VERSION
+// CampusFix AI Service - DUAL-TUNED STABILITY VERSION
 // ============================================================
 
 const MODEL = "gemini-2.5-flash"; 
@@ -14,6 +14,14 @@ const DEPT = {
 };
 
 const CATEGORIES = Object.keys(DEPT);
+
+// Standard safety settings to prevent accidental blocks on campus complaints
+const safetySettings = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+];
 
 function fallbackClassify(description, errorMsg) {
   console.error("❌ AI FAILURE:", errorMsg);
@@ -46,32 +54,29 @@ function extractJSON(text) {
   return null;
 }
 
-async function callGemini(prompt) {
+// Optimized callGemini with dynamic options for Strict vs Creative use
+async function callGemini(prompt, options = {}) {
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { 
-      temperature: 0.1, 
-      maxOutputTokens: 1000,
-      topP: 0.1,
-      topK: 1
-    }
+      temperature: options.temperature ?? 0.1, 
+      maxOutputTokens: options.maxTokens ?? 1000,
+      topP: options.topP ?? 0.1,
+      topK: options.topK ?? 1
+    },
+    safetySettings
   };
 
   const localKey = import.meta.env.VITE_GEMINI_API_KEY;
   const isDev = import.meta.env.DEV;
 
-  // In local dev, we use the Vite proxy to /api/gemini
-  // In production, we call /api/gemini which Vercel handles
   let url = `/api/gemini/v1beta/models/${MODEL}:generateContent?key=${localKey}`;
-  
-  if (!isDev) {
-    url = "/api/gemini";
-  }
+  if (!isDev) { url = "/api/gemini"; }
 
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload) // SEND FULL PAYLOAD TO BOTH
+    body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
@@ -81,31 +86,28 @@ async function callGemini(prompt) {
 
   const data = await response.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("No response from AI");
+  if (!text) throw new Error("No response from AI (check safety filters)");
   return text;
 }
 
 export const classifyComplaint = async (description, imageBase64 = null) => {
-  const prompt = `You are a university complaint classifier. 
-Output ONLY raw JSON. No markdown. No conversational text.
-
+  const prompt = `Classify this university complaint and return ONLY raw JSON:
 {
   "category": "Bathroom & Hygiene | Anti-Ragging & Safety | Mess & Food Quality | Academic Issues | Infrastructure/Maintenance | Other",
-  "confidence": <integer 85-99>,
+  "confidence": 85-99,
   "department": "<department name>",
   "priority": "High | Medium | Low",
   "reasoning": "2-sentence explanation"
 }
-
 Complaint: "${description}"`;
 
   try {
-    const rawText = await callGemini(prompt);
+    // USE STRICT SETTINGS FOR CLASSIFICATION
+    const rawText = await callGemini(prompt, { temperature: 0.1, topP: 0.1, topK: 1 });
     const parsed = extractJSON(rawText);
     
     if (!parsed || !parsed.category) throw new Error("JSON Format Error");
 
-    // CONFIDENCE NORMALIZATION: Ensure user sees high values for valid AI hits
     const rawConfidence = Number(parsed.confidence) || 85;
     const normalizedConfidence = Math.max(88, Math.min(99, rawConfidence));
 
@@ -114,7 +116,7 @@ Complaint: "${description}"`;
       confidence: normalizedConfidence,
       department: DEPT[parsed.category] || parsed.department || "General Administration",
       priority: ["High","Medium","Low"].includes(parsed.priority) ? parsed.priority : "Medium",
-      reasoning: parsed.reasoning || "AI successfully analyzed this complaint.",
+      reasoning: parsed.reasoning || "AI analyzed the issue effectively.",
       isFallback: false
     };
   } catch (err) {
@@ -124,31 +126,42 @@ Complaint: "${description}"`;
 
 export const askAIBuddy = async (chatHistory, newMessage) => {
   try {
-    const context = chatHistory.slice(-5).map(m => `${m.role}: ${m.content}`).join("\n");
-    const prompt = `You are a helpful student assistant. Be concise.
+    const context = chatHistory.slice(-5).map(m => `${m.role === 'user' ? 'Student' : 'Buddy'}: ${m.content}`).join("\n");
+    const prompt = `You are CampusFix AI Buddy, a supportive student assistant.
+Be helpful, empathetic, and concise. 
+If someone needs to report an issue, mention they can "Submit a Complaint" on the portal.
+
 ${context}
 Student: ${newMessage}
-AI:`;
-    return await callGemini(prompt);
+Buddy:`;
+    
+    // USE CREATIVE SETTINGS FOR CHAT
+    return await callGemini(prompt, { 
+      temperature: 0.7, 
+      topP: 0.8, 
+      topK: 40,
+      maxTokens: 500 
+    });
   } catch (err) {
-    return "I'm having a small technical glitch. Can you try again?";
+    console.error("Chat Error:", err);
+    return "I'm experiencing a high volume of requests or a small technical glitch. Can you try your question again? 🔄";
   }
 };
 
 export const generateNotificationMessage = async (complaint) => {
   try {
-    const prompt = `Write a professional 150-word email notification to the Head of ${complaint.department} regarding: ${complaint.description}`;
-    return await callGemini(prompt);
+    const prompt = `Write a professional 150-word email regarding Complaint ID ${complaint.id}: ${complaint.description}`;
+    return await callGemini(prompt, { temperature: 0.6 });
   } catch (err) {
-    return `Notification pending for ${complaint.department}.`;
+    return `Notification pending for Complaint ${complaint.id}.`;
   }
 };
 
 export const generateAdminInsights = async (complaints) => {
   try {
-    const prompt = `Analyze these complaints and return a JSON array of 3 insights: [{"title":"","type":"risk|trend|positive","description":"","recommendation":""}]
+    const prompt = `Analyze these complaints and return exactly 3 insights as JSON array:
 Data: ${JSON.stringify(complaints.slice(0,5))}`;
-    const text = await callGemini(prompt);
+    const text = await callGemini(prompt, { temperature: 0.1 });
     return extractJSON(text) || [];
   } catch (err) {
     return [];
