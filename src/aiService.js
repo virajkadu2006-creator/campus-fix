@@ -1,8 +1,8 @@
 // ============================================================
-// CampusFix AI Service - OPENAI MIGRATION VERSION
+// CampusFix AI Service - GOOGLE GEMINI VERSION
 // ============================================================
 
-const MODEL = "gpt-4o-mini"; // Standard modern choice for efficiency and speed
+const MODEL = "gemini-flash-latest"; 
 
 const DEPT = {
   "Bathroom & Hygiene": "Housekeeping & Sanitation",
@@ -30,7 +30,7 @@ function fallbackClassify(description, errorMsg) {
     confidence: 15,
     department: DEPT[category] || "General Administration",
     priority: (category === "Anti-Ragging & Safety" || lower.includes("urgent")) ? "High" : "Medium",
-    reasoning: "⚠️ OpenAI service unavailable — keyword fallback used.",
+    reasoning: "⚠️ Gemini service unavailable — keyword fallback used.",
     isFallback: true
   };
 }
@@ -39,43 +39,48 @@ function extractJSON(text) {
   if (!text) return null;
   const clean = text.trim();
   try { return JSON.parse(clean); } catch (_) {}
+  // Handle markdown blocks
   const md = clean.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (md) { try { return JSON.parse(md[1].trim()); } catch (_) {} }
+  // Handle loose curly braces
   const start = clean.indexOf('{'), end = clean.lastIndexOf('}');
   if (start !== -1 && end > start) { try { return JSON.parse(clean.slice(start, end + 1)); } catch (_) {} }
   return null;
 }
 
-// Rewritten for OpenAI Chat Completions format
-async function callOpenAI(prompt, options = {}) {
+/**
+ * Modernized for Google Gemini API via Fetch
+ */
+async function callGemini(prompt, options = {}) {
   const isDev = import.meta.env.DEV;
-  const localKey = import.meta.env.VITE_OPENAI_API_KEY;
+  // Support both new GEMINI key and legacy OPENAI variable name if user just swapped values
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_OPENAI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("Missing Gemini API Key. Please update your .env file.");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
 
   const payload = {
-    model: MODEL,
-    messages: [
-      { role: "system", content: "You are an assistant for CampusFix, a university complaint management platform." },
-      { role: "user", content: prompt }
-    ],
-    temperature: options.temperature ?? 0.7,
-    max_tokens: options.maxTokens ?? 1000
+    contents: [{
+      parts: [{ text: prompt }]
+    }],
+    generationConfig: {
+      temperature: options.temperature ?? 0.7,
+      maxOutputTokens: options.maxTokens ?? 1000,
+      topP: 0.95,
+      topK: 40
+    }
   };
 
-  let url;
-  let headers = { "Content-Type": "application/json" };
-
-  if (isDev && localKey) {
-    url = "https://api.openai.com/v1/chat/completions";
-    headers["Authorization"] = `Bearer ${localKey}`;
-    console.log("📡 [DEV] Directly calling OpenAI API...");
-  } else {
-    url = "/api/openai";
-    console.log("📡 [PROD] Calling OpenAI proxy...");
+  if (isDev) {
+    console.log(`📡 [DEV] Calling Gemini API (${MODEL})...`);
   }
 
   const response = await fetch(url, {
     method: "POST",
-    headers: headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
 
@@ -85,35 +90,36 @@ async function callOpenAI(prompt, options = {}) {
     throw new Error(data.error?.message || `HTTP ${response.status}`);
   }
 
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error("No response from OpenAI");
+  const content = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!content) throw new Error("Empty response from Gemini");
   return content;
 }
 
 export const classifyComplaint = async (description, imageBase64 = null) => {
-  const prompt = `Classify this university complaint and return ONLY raw JSON:
+  const prompt = `You are a university administrator. Classify this complaint into one of these categories: ${CATEGORIES.join(", ")}.
+Return ONLY raw JSON in this format:
 {
-  "category": "Bathroom & Hygiene | Anti-Ragging & Safety | Mess & Food Quality | Academic Issues | Infrastructure/Maintenance | Other",
+  "category": "Selected Category",
   "confidence": 85-99,
-  "department": "<department name>",
+  "department": "Name of department handling this",
   "priority": "High | Medium | Low",
-  "reasoning": "2-sentence explanation"
+  "reasoning": "Brief explanation"
 }
 
 Complaint: "${description}"`;
 
   try {
-    const rawText = await callOpenAI(prompt, { temperature: 0.1 }); // Use low temp for classification logic
+    const rawText = await callGemini(prompt, { temperature: 0.1 });
     const parsed = extractJSON(rawText);
     
-    if (!parsed || !parsed.category) throw new Error("JSON Format Error");
+    if (!parsed || !parsed.category) throw new Error("Invalid Gemini response format");
 
     return {
       category: CATEGORIES.includes(parsed.category) ? parsed.category : "Other",
       confidence: Math.max(90, Number(parsed.confidence) || 90),
       department: DEPT[parsed.category] || parsed.department || "General Administration",
       priority: ["High","Medium","Low"].includes(parsed.priority) ? parsed.priority : "Medium",
-      reasoning: parsed.reasoning || "Complaint classified by OpenAI GPT-4o-mini.",
+      reasoning: parsed.reasoning || "Complaint classified by Gemini Intelligence.",
       isFallback: false
     };
   } catch (err) {
@@ -124,22 +130,20 @@ Complaint: "${description}"`;
 export const askAIBuddy = async (chatHistory, newMessage) => {
   try {
     const historyContext = chatHistory.slice(-5).map(m => `${m.role === 'user' ? 'Student' : 'Assistant'}: ${m.content}`).join("\n");
-    const prompt = `You are the CampusFix AI Buddy. Be helpful and empathetic.
-${historyContext}
-Student: ${newMessage}
-Assistant:`;
+    const systemPrompt = "You are the CampusFix AI Buddy, a helpful and empathetic university assistant. Keep responses concise and friendly.\n\n";
+    const prompt = `${systemPrompt}${historyContext}\nStudent: ${newMessage}\nAssistant:`;
     
-    return await callOpenAI(prompt, { temperature: 0.7 });
+    return await callGemini(prompt, { temperature: 0.7 });
   } catch (err) {
     console.error("Chat Error:", err);
-    return "I'm having a small glitch connecting to my neural network. Can you try that again?";
+    return "I'm having a bit of trouble connecting. Could you please try your message again?";
   }
 };
 
 export const generateNotificationMessage = async (complaint) => {
   try {
-    const prompt = `Write a professional 150-word email notification regarding: ${complaint.description}`;
-    return await callOpenAI(prompt, { temperature: 0.5 });
+    const prompt = `Write a professional 100-word email notification to a student regarding their complaint: "${complaint.description}". The department handling this is ${complaint.department}.`;
+    return await callGemini(prompt, { temperature: 0.5 });
   } catch (err) {
     return `Notification pending for ${complaint.department}.`;
   }
@@ -147,11 +151,13 @@ export const generateNotificationMessage = async (complaint) => {
 
 export const generateAdminInsights = async (complaints) => {
   try {
-    const prompt = `Analyze these 5 complaints and return exactly 3 insights as JSON array:
-Data: ${JSON.stringify(complaints.slice(0,5))}`;
-    const text = await callOpenAI(prompt, { temperature: 0.2 });
+    const prompt = `Analyze these latest university complaints and return exactly 3 high-level insights as a JSON array of strings:
+Data: ${JSON.stringify(complaints.slice(0,5))}
+Only return the JSON array [ "Insight 1", "Insight 2", "Insight 3" ].`;
+    
+    const text = await callGemini(prompt, { temperature: 0.2 });
     return extractJSON(text) || [];
   } catch (err) {
-    return [];
+    return ["AI insights currently unavailable.", "Monitoring systems remain active.", "Check department logs for updates."];
   }
 };
