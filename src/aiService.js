@@ -2,7 +2,7 @@
 // CampusFix AI Service - High Reliability Version
 // ============================================================
 
-const MODEL = "gemini-1.5-flash"; // More reliable model for newer keys
+const MODEL = "gemini-2.5-flash"; // More reliable model for newer keys
 
 const DEPT = {
   "Bathroom & Hygiene": "Housekeeping & Sanitation",
