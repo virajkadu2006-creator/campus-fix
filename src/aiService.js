@@ -1,24 +1,10 @@
-const SYSTEM_PROMPT = `You are an AI classification agent for a campus complaint management system.
-Classify the student complaint into exactly one of these 6 categories:
-1. Bathroom & Hygiene
-2. Anti-Ragging & Safety
-3. Mess & Food Quality
-4. Academic Issues
-5. Infrastructure/Maintenance
-6. Other
+// ============================================================
+// CampusFix AI Service - Gemini 2.5 Flash Integration
+// ============================================================
 
-Also determine priority: High, Medium, or Low.
-Anti-Ragging complaints are ALWAYS High priority, no exceptions.
-Complaints with urgent/emergency/broken/no water/no power -> High.
-
-Respond ONLY with valid JSON, no markdown, no preamble:
-{
-  "category": "<one of the 6 categories exactly as written above>",
-  "confidence": <integer 0-100>,
-  "department": "<mapped department name>",
-  "priority": "High" | "Medium" | "Low",
-  "reasoning": "<1-2 sentence explanation>"
-}`;
+const GEMINI_API_KEY = "AIzaSyCtCvXzcMrIbCP067T_-NK6WXzIXAVtlZI";
+const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
 const DEPARTMENT_MAP = {
   "Bathroom & Hygiene": "Housekeeping & Sanitation",
@@ -46,150 +32,102 @@ function fallbackClassify(text) {
   }
   return {
     category: best.score > 0 ? best.category : "Needs Admin Review",
-    confidence: Math.min(70, best.score * 15) || 45, // default 45 if completely unmatched
+    confidence: Math.min(70, best.score * 15) || 45,
     department: best.score > 0 ? DEPARTMENT_MAP[best.category] : "Admin Review Required",
     priority: (best.category === "Anti-Ragging & Safety" || lower.includes('urgent') || lower.includes('emergency')) ? "High" : "Medium",
     reasoning: "Classified by keyword matching (AI unavailable or key missing)"
   };
 }
 
+async function callGemini(payload) {
+  const response = await fetch(GEMINI_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(`Gemini ${response.status}: ${err?.error?.message || 'Unknown error'}`);
+  }
+  return response.json();
+}
+
+// ---- COMPLAINT CLASSIFICATION ----
 export const classifyComplaint = async (description, imageBase64 = null) => {
+  const SYSTEM_PROMPT = `You are an AI classification agent for a campus complaint management system.
+Classify the student complaint into exactly one of these 6 categories:
+1. Bathroom & Hygiene
+2. Anti-Ragging & Safety
+3. Mess & Food Quality
+4. Academic Issues
+5. Infrastructure/Maintenance
+6. Other
+
+Also determine priority: High, Medium, or Low.
+Anti-Ragging complaints are ALWAYS High priority, no exceptions.
+Complaints with urgent/emergency/broken/no water/no power -> High.
+
+Respond ONLY with valid JSON, no markdown, no preamble:
+{
+  "category": "<one of the 6 categories exactly as written above>",
+  "confidence": <integer 0-100>,
+  "department": "<mapped department name>",
+  "priority": "High" | "Medium" | "Low",
+  "reasoning": "<1-2 sentence explanation>"
+}`;
+
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-    
-    // Construct Gemini content parts
     const parts = [{ text: `Classify this complaint: ${description}` }];
-    
     if (imageBase64) {
-      // imageBase64 format is usually 'data:image/jpeg;base64,...'
       const base64Data = imageBase64.split(',')[1];
       const mimeType = imageBase64.split(';')[0].split(':')[1] || 'image/jpeg';
-      parts.unshift({
-        inlineData: {
-          data: base64Data,
-          mimeType: mimeType
-        }
-      });
+      parts.unshift({ inlineData: { data: base64Data, mimeType } });
     }
 
     const payload = {
-      systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }]
-      },
-      contents: [{
-        role: "user",
-        parts: parts
-      }],
-      generationConfig: {
-        responseMimeType: "application/json"
-      }
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts }],
+      generationConfig: { responseMimeType: "application/json" }
     };
 
-    const response = await fetch("/api/gemini", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-    }
-
-    const data = await response.json();
-    
+    const data = await callGemini(payload);
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    if (!text) {
-        throw new Error("Invalid response format from Gemini");
-    }
-    
-    try {
-        const parsed = JSON.parse(text);
-        
-        let confidence = parsed.confidence || 50;
-        let category = parsed.category || "Other";
-        let department = parsed.department || DEPARTMENT_MAP[category || "Other"] || "General Administration";
-        
-        if (confidence < 50) {
-            category = "Needs Admin Review";
-            department = "Admin Review Required";
-        }
+    if (!text) throw new Error("Empty response from Gemini");
 
-        // Final sanity check of parsed properties
-        return {
-            category: category,
-            confidence: confidence,
-            department: department,
-            priority: parsed.priority || "Medium",
-            reasoning: parsed.reasoning || "AI analyzed the context to assign this category."
-        };
-    } catch (e) {
-        console.error("Failed to parse JSON from Gemini", text);
-        return fallbackClassify(description);
+    const parsed = JSON.parse(text);
+    let confidence = parsed.confidence || 50;
+    let category = parsed.category || "Other";
+    let department = parsed.department || DEPARTMENT_MAP[category] || "General Administration";
+
+    if (confidence < 50) {
+      category = "Needs Admin Review";
+      department = "Admin Review Required";
     }
-    
+
+    return {
+      category,
+      confidence,
+      department,
+      priority: parsed.priority || "Medium",
+      reasoning: parsed.reasoning || "AI analyzed the context to assign this category."
+    };
   } catch (err) {
-    console.error("API call failed, using fallback:", err);
+    console.error("classifyComplaint failed:", err.message);
     return fallbackClassify(description);
   }
 };
 
-const NOTIFICATION_SYSTEM_PROMPT = `You are a formal campus administration notification writer for CampusFix,
-an AI-powered campus complaint management system.
-
-Your job is to generate highly detailed, personalized, and professional notification messages to campus departments whenever a new student complaint is assigned to them.
-This is NOT a template system. Each message must feel human-written, context-aware, and action-oriented.
-
-OBJECTIVE:
-Given a complaint and its AI classification, generate a complete department notification message that:
-- Clearly explains the issue
-- Justifies why it was routed to that department
-- Communicates urgency
-- Guides next action
-
-STRICT OUTPUT RULES:
-- Output ONLY the message text
-- No JSON
-- No markdown
-- No bullet points
-- No headings like "Subject"
-- Write in full paragraphs
-- Minimum length: 200 words
-- Maximum length: 350 words
-If output is short or generic, it is incorrect.
-
-WRITING INSTRUCTIONS:
-Write a formal, personalized notification message addressed to the given department.
-The message MUST include:
-1. Proper Opening: Address the department directly. Mention that a new complaint has been assigned via CampusFix.
-2. Complaint Summary (Rewritten): Do NOT copy the complaint. Rewrite it clearly and professionally. Show empathy toward student inconvenience.
-3. Classification Explanation: Mention category. Explain WHY it was routed to that department. Use AI reasoning naturally.
-4. Priority Explanation: Clearly state priority level. Explain urgency: High -> immediate action within 2 hours, Medium -> respond within 24 hours, Low -> respond within 48-72 hours.
-5. Confidence Interpretation: Explain what the confidence score means.
-6. Image Mention: If image is attached, mention that visual evidence has been provided.
-7. Recommended Action: Provide clear, practical steps (inspection, dispatching staff, etc.).
-8. Closing: Professional closing. Use this exact signature:
+// ---- NOTIFICATION MESSAGE GENERATION ----
+export const generateNotificationMessage = async (complaint) => {
+  const NOTIFICATION_SYSTEM_PROMPT = `You are a formal campus administration notification writer for CampusFix.
+Generate a professional 200-350 word notification to the department about a new complaint assigned via CampusFix.
+Include: opening, complaint summary (rewritten professionally), category reasoning, priority urgency, recommended action steps, and this closing:
 CampusFix Automated Systems
 Campus Complaint Management Platform
+Output ONLY the message text. No JSON. No markdown.`;
 
-TONE GUIDELINES: Formal but not robotic. Clear and structured. Empathetic but not emotional. Action-oriented.
-WHAT TO AVOID: Do NOT copy the complaint text directly. Do NOT use generic phrases only. Do NOT repeat same sentence structures. Do NOT produce short output. Do NOT sound like a chatbot.
-FINAL INSTRUCTION: Generate the best possible notification message that a real university system would send.`;
-
-export const generateNotificationMessage = async (complaint) => {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
-    
-    // Construct Input Format
-    const inputFormat = `
-Tracking ID: ${complaint.id}
+    const inputFormat = `Tracking ID: ${complaint.id}
 Student Complaint: ${complaint.description}
 Category: ${complaint.category}
 Department: ${complaint.department}
@@ -200,157 +138,80 @@ Image Attached: ${complaint.imageBase64 ? 'Yes' : 'No'}
 Submitted At: ${complaint.submittedAt}`;
 
     const payload = {
-      systemInstruction: {
-        parts: [{ text: NOTIFICATION_SYSTEM_PROMPT }]
-      },
-      contents: [{
-        role: "user",
-        parts: [{ text: inputFormat }]
-      }],
-      generationConfig: {
-        responseMimeType: "text/plain"
-      }
+      systemInstruction: { parts: [{ text: NOTIFICATION_SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text: inputFormat }] }],
+      generationConfig: { responseMimeType: "text/plain" }
     };
 
-    const response = await fetch("/api/gemini", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await callGemini(payload);
     return data?.candidates?.[0]?.content?.parts?.[0]?.text || "Notification message unavailable.";
-    
   } catch (err) {
-    console.error("Notification generation failed:", err);
+    console.error("generateNotificationMessage failed:", err.message);
     return `Dear ${complaint.department},\n\nA new priority ${complaint.priority} issue has been logged. Please review tracking ID ${complaint.id}.\n\nCampusFix Automated Systems`;
   }
 };
 
-const BUDDY_SYSTEM_PROMPT = `You are CampusFix AI Buddy, a smart, friendly, and helpful campus assistant. You help students solve basic problems, give guidance, suggest actions, and assist with campus-related issues. Be clear, helpful, slightly conversational, and solution-oriented. Keep answers practical and easy to understand.`;
-
+// ---- AI BUDDY CHATBOT ----
 export const askAIBuddy = async (chatHistory, newMessage) => {
+  const BUDDY_SYSTEM_PROMPT = `You are CampusFix AI Buddy, a smart, friendly, and helpful campus assistant. You help students solve basic problems, give guidance, suggest actions, and assist with campus-related issues. Be clear, helpful, slightly conversational, and solution-oriented. Keep answers practical and easy to understand.`;
+
   try {
-    const contents = chatHistory.map(msg => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.content }]
-    }));
-    
-    contents.push({
-      role: 'user',
-      parts: [{ text: newMessage }]
-    });
+    const contents = [
+      ...chatHistory.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }]
+      })),
+      { role: 'user', parts: [{ text: newMessage }] }
+    ];
 
     const payload = {
-      systemInstruction: {
-        parts: [{ text: BUDDY_SYSTEM_PROMPT }]
-      },
-      contents: contents,
-      generationConfig: {
-        responseMimeType: "text/plain"
-      }
+      systemInstruction: { parts: [{ text: BUDDY_SYSTEM_PROMPT }] },
+      contents,
+      generationConfig: { responseMimeType: "text/plain" }
     };
 
-    const response = await fetch("/api/gemini", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || "I'm having trouble thinking right now. Please try again.";
-    
+    const data = await callGemini(payload);
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!reply) throw new Error("Empty response");
+    return reply;
   } catch (err) {
-    console.error("AI Buddy failed:", err);
-    return "AI assistant is currently unavailable. Please try again.";
+    console.error("askAIBuddy failed:", err.message);
+    return "AI assistant is temporarily overloaded. Please try again in a moment.";
   }
 };
 
-const ADMIN_INSIGHTS_PROMPT = `You are the AI Executive Analyst for the CampusFix Administrator dashboard.
-Your job is to analyze the provided list of active and recent campus complaints and generate strategic insights.
-
-OUTPUT FORMAT:
-Respond ONLY with an array of exactly 3 JSON objects representing insight cards. No markdown formatting block, no text before or after.
-Each object must have:
-- title (string: short, e.g., "Water Shortage in Block B")
-- type (string: "risk", "trend", "positive")
-- description (string: 2-3 sentence analysis)
-- recommendation (string: actionable advice)
-
-Example:
-[
-  {
-    "title": "Unresolved Connectivity Issues",
-    "type": "risk",
-    "description": "...",
-    "recommendation": "..."
-  }
-]`;
-
+// ---- ADMIN INSIGHTS ----
 export const generateAdminInsights = async (complaints) => {
-  // Pre-process complaints (strip large images, send only relevant subset)
-  const slimComplaints = complaints.slice(0, 50).map(c => ({
-    category: c.category,
-    status: c.status,
-    priority: c.priority,
-    department: c.department,
-    description: c.description,
-    submittedAt: c.submittedAt
-  }));
+  const ADMIN_INSIGHTS_PROMPT = `You are the AI Executive Analyst for the CampusFix Administrator dashboard.
+Analyze the provided campus complaints and respond ONLY with a JSON array of exactly 3 insight objects.
+Each object must have: title, type ("risk"|"trend"|"positive"), description (2-3 sentences), recommendation.
+No markdown. No text outside the JSON array.`;
 
   try {
+    const slimComplaints = complaints.slice(0, 50).map(c => ({
+      category: c.category,
+      status: c.status,
+      priority: c.priority,
+      department: c.department,
+      description: c.description,
+      submittedAt: c.submittedAt
+    }));
+
     const payload = {
       systemInstruction: { parts: [{ text: ADMIN_INSIGHTS_PROMPT }] },
-      contents: [{
-        role: "user",
-        parts: [{ text: "Analyze these complaints:\n" + JSON.stringify(slimComplaints) }]
-      }],
+      contents: [{ role: "user", parts: [{ text: "Analyze these complaints:\n" + JSON.stringify(slimComplaints) }] }],
       generationConfig: { responseMimeType: "application/json" }
     };
 
-    const response = await fetch("/api/gemini", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-    const data = await response.json();
+    const data = await callGemini(payload);
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      throw new Error("Invalid array format");
-    } catch(e) {
-      console.error("AI Insights parsing failed:", text);
-      return [];
-    }
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    throw new Error("Invalid format");
   } catch (err) {
-    console.error("AI Insights failed:", err);
+    console.error("generateAdminInsights failed:", err.message);
     return [
-      {
-        title: "Analysis Failed",
-        type: "risk",
-        description: "An error occurred while generating insights.",
-        recommendation: "Try again later or check network connection."
-      }
+      { title: "Analysis Unavailable", type: "risk", description: "Could not generate AI insights at this time.", recommendation: "Try again later." }
     ];
   }
 };
