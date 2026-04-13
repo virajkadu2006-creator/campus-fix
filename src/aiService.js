@@ -1,19 +1,8 @@
 // ============================================================
-// CampusFix AI Service - Production Grade
-// All Gemini calls go through /api/gemini-classify (Vercel backend)
-// Local dev: direct call with Vite proxy
+// CampusFix AI Service - Senior Full-Stack Refactor
+// Calls secure backend route: /api/gemini
 // ============================================================
 
-// Key stored split to prevent scanner detection
-// Replace all 3 parts with your NEW key parts when you get a fresh key
-const _K1 = "AIzaSyA4A";
-const _K2 = "VbmKA5E-DmuC";
-const _K3 = "1F17xXDYPacB6_QTNs";
-const GEMINI_KEY = _K1 + _K2 + _K3;
-
-const MODEL = "gemini-2.5-flash";
-
-// Department routing map
 const DEPT = {
   "Bathroom & Hygiene": "Housekeeping & Sanitation",
   "Anti-Ragging & Safety": "Dean of Students / Warden",
@@ -23,272 +12,148 @@ const DEPT = {
   "Other": "General Administration"
 };
 
-const CATEGORIES = Object.keys(DEPT);
+// Keyword fallback (ONLY used if API explicitly fails)
+function fallbackClassify(description, errorMsg) {
+  console.warn("⚠️ AI SERVICE FAILED: ", errorMsg);
+  const lower = description.toLowerCase();
+  let category = "Other";
+  
+  if (lower.includes("bathroom") || lower.includes("toilet") || lower.includes("water")) category = "Bathroom & Hygiene";
+  else if (lower.includes("ragging") || lower.includes("bully") || lower.includes("secure")) category = "Anti-Ragging & Safety";
+  else if (lower.includes("food") || lower.includes("mess") || lower.includes("meal")) category = "Mess & Food Quality";
+  else if (lower.includes("exam") || lower.includes("professor") || lower.includes("marks")) category = "Academic Issues";
+  else if (lower.includes("broken") || lower.includes("fan") || lower.includes("electricity") || lower.includes("wifi")) category = "Infrastructure/Maintenance";
 
-// Keyword fallback (only used if Gemini is truly down)
-const KW = {
-  "Bathroom & Hygiene": ["bathroom","toilet","water","hygiene","flush","washroom","shower","soap","dirty","stink","smell"],
-  "Anti-Ragging & Safety": ["ragging","bully","threaten","unsafe","harass","violent","attack","fear","hit","abuse","threat"],
-  "Mess & Food Quality": ["mess","food","meal","canteen","lunch","dinner","breakfast","stale","cook","taste","quality","cockroach"],
-  "Academic Issues": ["exam","professor","marks","grade","attendance","course","class","teacher","result","assignment","faculty"],
-  "Infrastructure/Maintenance": ["broken","repair","electricity","wifi","internet","fan","light","door","window","leak","power","ac","network","elevator","lift"],
-};
-
-function fallbackClassify(text) {
-  const lower = text.toLowerCase();
-  let best = { category: "Other", score: 0 };
-  for (const [cat, words] of Object.entries(KW)) {
-    const score = words.filter(w => lower.includes(w)).length;
-    if (score > best.score) best = { category: cat, score };
-  }
-  const cat = best.score > 0 ? best.category : "Other";
   return {
-    category: cat,
-    confidence: 45, // Honest low confidence to show fallback was used
-    department: DEPT[cat],
-    priority: (cat === "Anti-Ragging & Safety" || lower.includes("urgent")) ? "High" : "Medium",
-    reasoning: "⚠️ AI service temporarily unavailable — keyword fallback used.",
+    category,
+    confidence: 15, // Real low value for fallback
+    department: DEPT[category] || "General Administration",
+    priority: (category === "Anti-Ragging & Safety" || lower.includes("urgent")) ? "High" : "Medium",
+    reasoning: "⚠️ AI service unavailable — keyword fallback used.",
     isFallback: true
   };
 }
 
-// Robust JSON extractor — handles plain JSON, markdown blocks, embedded JSON
+// Safer JSON extraction
 function extractJSON(text) {
-  if (!text) return null;
-  const clean = text.trim();
-  // Try direct parse
-  try { return JSON.parse(clean); } catch (_) {}
-  // Try markdown code block
-  const mdMatch = clean.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (mdMatch) { try { return JSON.parse(mdMatch[1].trim()); } catch (_) {} }
-  // Try extract { } block
-  const start = clean.indexOf('{');
-  const end = clean.lastIndexOf('}');
-  if (start !== -1 && end > start) { try { return JSON.parse(clean.slice(start, end + 1)); } catch (_) {} }
-  return null;
+  try { return JSON.parse(text); } catch (e) {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+      try { return JSON.parse(match[0]); } catch (e2) { return null; }
+    }
+    return null;
+  }
 }
 
-// Core Gemini caller
-async function callGeminiAPI(prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`;
+// Step 1: Securely call backend proxy
+async function callInternalAPI(payload) {
+  console.log("📡 [CampusFix AI] Sending to AI:", payload);
   
-  console.log("📡 [CampusFix AI] Calling Gemini API...");
-  
-  const payload = {
-    contents: [{ 
-      role: "user", 
-      parts: [{ text: prompt }] 
-    }],
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: 512,
-    }
-  };
-
-  const res = await fetch(url, {
+  const response = await fetch("/api/gemini", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
 
-  const data = await res.json();
+  const data = await response.json();
+  console.log("📡 [CampusFix AI] AI raw response:", data);
   
-  if (!res.ok) {
-    console.error("❌ [CampusFix AI] API Error:", res.status, data?.error?.message);
-    throw new Error(`API ${res.status}: ${data?.error?.message}`);
-  }
-
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  console.log("✅ [CampusFix AI] Raw response:", text?.slice(0, 300));
-  return text || "";
+  if (!response.ok) throw new Error(data.error?.message || "Internal API Error");
+  return data;
 }
 
-
-// ===========================================================
-// 1. COMPLAINT CLASSIFICATION
-// ===========================================================
 export const classifyComplaint = async (description, imageBase64 = null) => {
-  console.log("🤖 [CampusFix AI] classifyComplaint called");
-  console.log("📝 Complaint:", description.slice(0, 100));
+  const prompt = `You are a highly accurate campus complaint classification AI.
 
-  const prompt = `You are a highly accurate AI classifier for a university campus complaint management system.
+Analyze the complaint deeply and classify based on meaning, not just keywords.
 
-Analyze the following student complaint carefully and classify it.
-
-CATEGORIES (pick exactly one):
-- Bathroom & Hygiene
-- Anti-Ragging & Safety
-- Mess & Food Quality
-- Academic Issues
-- Infrastructure/Maintenance
-- Other
-
-RULES:
-- Anti-Ragging & Safety = ALWAYS High priority
-- Urgency words (urgent, emergency, broken, no power, no water) = High priority
-- Wifi / electricity / lights / lift / AC = Infrastructure/Maintenance
-- Food / mess / canteen = Mess & Food Quality
-- confidence must be between 65 and 99 (you are a confident, expert classifier)
-- reasoning must specifically reference the complaint content
-
-Return ONLY a raw JSON object. No markdown. No explanation. No code blocks.
+Classify this complaint into one category and return ONLY JSON:
 
 {
-  "category": "<one of the 6 categories above>",
-  "confidence": <number 65-99>,
-  "department": "<relevant department name>",
-  "priority": "High" | "Medium" | "Low",
-  "reasoning": "<specific 2-sentence reason referencing the complaint>"
+  "category": "Bathroom & Hygiene | Anti-Ragging & Safety | Mess & Food Quality | Academic Issues | Infrastructure/Maintenance | Other",
+  "confidence": number (0-100),
+  "department": "Name of department",
+  "priority": "High | Medium | Low",
+  "reasoning": "Short 1-2 sentence explanation"
 }
 
-Student Complaint: "${description}"`;
+Ensure:
+- No extra text
+- No markdown
+- Always valid JSON
+- Realistic confidence (70–95 typical)
+- Avoid low confidence unless truly ambiguous.
+
+Complaint:
+"${description}"`;
 
   try {
-    const rawText = await callGeminiAPI(prompt);
+    const payload = {
+      contents: [{ parts: [{ text: prompt }] }]
+    };
+
+    const data = await callInternalAPI(payload);
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
     
-    if (!rawText) {
-      throw new Error("Empty response received from Gemini");
-    }
+    if (!rawText) throw new Error("No text candidates returned from AI");
 
     const parsed = extractJSON(rawText);
-    
-    if (!parsed) {
-      console.error("❌ [CampusFix AI] Failed to parse JSON:", rawText);
-      throw new Error("Could not parse Gemini response as JSON");
-    }
+    if (!parsed) throw new Error("Could not parse AI response as JSON");
 
-    console.log("✅ [CampusFix AI] Classification result:", parsed);
+    console.log("✅ [CampusFix AI] Parsed result:", parsed);
 
-    // Validate and clamp values
-    const confidence = Math.max(65, Math.min(99, Number(parsed.confidence) || 75));
-    const category = CATEGORIES.includes(parsed.category) ? parsed.category : "Other";
-    const department = DEPT[category] || parsed.department || "General Administration";
-    const priority = ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Medium";
-
-    // Route low-confidence to admin review
-    if (confidence < 50) {
-      return { category: "Needs Admin Review", confidence, department: "Admin Review Required", priority, reasoning: parsed.reasoning, isFallback: false };
-    }
+    // Step 5: Confidence Clamp Fix
+    const confidence = Math.max(parsed.confidence || 75, 60);
 
     return {
-      category,
-      confidence,
-      department,
-      priority,
-      reasoning: parsed.reasoning || "AI successfully classified this complaint.",
+      category: parsed.category || "Other",
+      confidence: confidence,
+      department: parsed.department || DEPT[parsed.category] || "General Administration",
+      priority: parsed.priority || "Medium",
+      reasoning: parsed.reasoning || "AI successfully analyzed your complaint",
       isFallback: false
     };
 
   } catch (err) {
-    console.error("❌ [CampusFix AI] classifyComplaint FAILED:", err.message);
-    console.error("↩️ [CampusFix AI] Using keyword fallback");
-    return fallbackClassify(description);
+    return fallbackClassify(description, err.message);
   }
 };
 
-
-// ===========================================================
-// 2. NOTIFICATION MESSAGE GENERATOR
-// ===========================================================
-export const generateNotificationMessage = async (complaint) => {
-  const prompt = `Write a formal university department notification (200-250 words).
-
-Department: ${complaint.department}
-Issue Summary: ${complaint.description}
-Category: ${complaint.category}
-Priority: ${complaint.priority}
-Confidence: ${complaint.confidence}%
-AI Reasoning: ${complaint.reasoning}
-Tracking ID: ${complaint.id}
-
-Rules:
-- Address the department formally
-- Summarize the issue professionally 
-- State priority urgency clearly
-- Give specific action steps
-- End with exactly:
-CampusFix Automated Systems
-Campus Complaint Management Platform
-
-Output only the message text. No headings. No JSON. No markdown.`;
-
-  try {
-    const text = await callGeminiAPI(prompt);
-    return text || `Dear ${complaint.department},\n\nComplaint ${complaint.id} (Priority: ${complaint.priority}) requires your attention.\n\nCampusFix Automated Systems\nCampus Complaint Management Platform`;
-  } catch (err) {
-    console.error("❌ [CampusFix AI] Notification generation failed:", err.message);
-    return `Dear ${complaint.department},\n\nA new ${complaint.priority} priority complaint (Tracking ID: ${complaint.id}) has been submitted and requires attention.\n\nCampusFix Automated Systems\nCampus Complaint Management Platform`;
-  }
-};
-
-
-// ===========================================================
-// 3. AI BUDDY CHATBOT
-// ===========================================================
 export const askAIBuddy = async (chatHistory, newMessage) => {
-  console.log("💬 [CampusFix AI] askAIBuddy called:", newMessage.slice(0, 60));
-  
+  const prompt = `You are CampusFix AI Buddy — a smart, friendly campus assistant.
+Help students with campus-related issues, give clear practical advice, and stay conversational.
+
+${chatHistory.map(m => `${m.role}: ${m.content}`).join("\n")}
+user: ${newMessage}`;
+
   try {
-    let conversationContext = "";
-    if (chatHistory.length > 0) {
-      conversationContext = chatHistory.slice(-6).map(m => 
-        `${m.role === 'user' ? 'Student' : 'CampusFix AI'}: ${m.content}`
-      ).join("\n") + "\n\n";
-    }
-
-    const prompt = `You are CampusFix AI Buddy — a smart, friendly, and helpful campus assistant at a university.
-Your job is to help students with campus problems, guide them on submitting complaints, explain processes, and give practical advice.
-Be conversational, clear, and solution-oriented. Keep answers concise (2-4 sentences typically unless more detail is needed).
-
-${conversationContext}Student: ${newMessage}
-CampusFix AI:`;
-
-    const text = await callGeminiAPI(prompt);
-    if (!text) throw new Error("Empty response");
-    return text.trim();
+    const payload = {
+      contents: [{ parts: [{ text: prompt }] }]
+    };
+    const data = await callInternalAPI(payload);
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't process that.";
   } catch (err) {
-    console.error("❌ [CampusFix AI] AI Buddy failed:", err.message);
-    return "I'm experiencing a brief connectivity issue. Please try again in a moment! 🔄";
+    console.error("AI Buddy Error:", err);
+    return "AI assistant is currently unavailable. Please try again.";
   }
 };
 
-
-// ===========================================================
-// 4. ADMIN EXECUTIVE INSIGHTS
-// ===========================================================
+// Insights using the same proxy
 export const generateAdminInsights = async (complaints) => {
+  const prompt = `Analyze these campus complaints and return exactly 3 insight objects as JSON:
+[{"title":"...","type":"risk|trend|positive","description":"...","recommendation":"..."}]
+
+Data: ${JSON.stringify(complaints.slice(0, 10))}`;
+
   try {
-    const slim = complaints.slice(0, 20).map(c => ({
-      category: c.category,
-      status: c.status, 
-      priority: c.priority,
-      description: c.description?.slice(0, 100)
-    }));
-
-    const prompt = `You are the AI Executive Analyst for CampusFix university complaint management dashboard.
-Analyze the complaint data and return strategic insights.
-
-Return ONLY a raw JSON array of exactly 3 objects. No markdown. No explanation.
-[
-  {
-    "title": "short title (max 5 words)",
-    "type": "risk" | "trend" | "positive",
-    "description": "2-sentence strategic analysis",
-    "recommendation": "1 concrete action sentence"
-  }
-]
-
-Complaint Data:
-${JSON.stringify(slim)}`;
-
-    const text = await callGeminiAPI(prompt);
-    const parsed = extractJSON(text);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    throw new Error("Invalid insights format");
+    const payload = {
+      contents: [{ parts: [{ text: prompt }] }]
+    };
+    const data = await callInternalAPI(payload);
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return extractJSON(text) || [];
   } catch (err) {
-    console.error("❌ [CampusFix AI] Admin insights failed:", err.message);
-    return [
-      { title: "Click to Regenerate", type: "trend", description: "AI insights require an active Gemini connection. The system is ready to analyze.", recommendation: "Wait a moment and click the refresh button to regenerate insights." }
-    ];
+    console.error("Admin Insights Error:", err);
+    return [];
   }
 };

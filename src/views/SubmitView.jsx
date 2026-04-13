@@ -63,7 +63,7 @@ export default function SubmitView() {
     setIsLoading(true);
 
     try {
-      setLoadingState('🤖 Analyzing via AI Engine...');
+      setLoadingState('🤖 AI analyzing your complaint...');
       const result = await classifyComplaint(description, image);
       
       const trackingId = 'CP-' + Math.floor(1000 + Math.random() * 9000);
@@ -161,10 +161,19 @@ export default function SubmitView() {
                </div>
             </div>
 
-            <div className="bg-indigo-500/10 text-indigo-100 p-5 rounded-2xl border border-indigo-500/20 text-sm leading-relaxed mb-6 font-medium shadow-[inset_0_0_20px_rgba(99,102,241,0.05)]">
-              <span className="font-bold mr-2 text-indigo-300">AI Reasoning:</span> 
+            <div className={`p-5 rounded-2xl border text-sm leading-relaxed mb-6 font-medium shadow-[inset_0_0_20px_rgba(99,102,241,0.05)] ${successData.isFallback ? 'bg-amber-500/10 text-amber-100 border-amber-500/20' : 'bg-indigo-500/10 text-indigo-100 border-indigo-500/20'}`}>
+              <span className={`font-bold mr-2 ${successData.isFallback ? 'text-amber-300' : 'text-indigo-300'}`}>
+                {successData.isFallback ? '⚠️ AI Fallback Reasoning:' : 'AI Reasoning:'}
+              </span> 
               <span className="text-slate-300">"{successData.reasoning}"</span>
             </div>
+
+            {!successData.isFallback && (
+              <div className="flex items-center gap-2 mb-6 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 text-xs font-bold fade-in">
+                <CheckCircle2 size={14} />
+                AI successfully analyzed your complaint
+              </div>
+            )}
 
             <div className="pt-6 border-t border-white/10">
                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">Routed To</span>
